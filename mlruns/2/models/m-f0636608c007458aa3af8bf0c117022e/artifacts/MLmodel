@@ -1,0 +1,22 @@
+artifact_path: /Volumes/MyProjects/GitHub/wealthwise-agent/mlruns/2/models/m-f0636608c007458aa3af8bf0c117022e/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.11.8
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.8.0
+mlflow_version: 3.8.1
+model_id: m-f0636608c007458aa3af8bf0c117022e
+model_size_bytes: 934
+model_uuid: m-f0636608c007458aa3af8bf0c117022e
+prompts: null
+run_id: f9d1e83061824ee6907ea59ffc4b5107
+utc_time_created: '2026-01-03 19:09:53.783182'

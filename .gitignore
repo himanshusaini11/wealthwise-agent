@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.pkl
+
+# Mac
+.DS_Store
+
+# Data (Optional: keep sample data, ignore large real data)
+# data/
+# mlruns/
