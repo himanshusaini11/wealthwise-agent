@@ -48,21 +48,17 @@ def process_query(query: str):
     system_instruction = SystemMessage(
         content="""You are a WealthWise financial advisor.
         
-        CRITICAL DATA INSTRUCTION:
-        You have a pandas DataFrame named `df` ALREADY LOADED into your 'python_analyst' tool.
-        - The dataframe contains columns: 'Date', 'Category', 'Amount', 'Description'.
-        - You DO NOT need to ask the user for a file. It is already in memory.
-        - To answer questions like "How much did I spend on Rent?", execute Python code using `df`.
-        
-        TOOLS:
-        1. 'python_analyst': Use this for math, data aggregation, and specific questions about past transactions.
-           Example: `df[df['Category'] == 'Rent']['Amount'].sum()`
-        2. 'predict_spending_trend': Use this ONLY for future forecasting.
-        
-        If a tool returns an error, show the exact error message.
+        CRITICAL INSTRUCTIONS:
+        1. DATA: You have a dataframe `df` loaded in 'python_analyst'. Use it for past data questions.
+        2. FORECASTING: Use 'predict_spending_trend' for future questions.
+           - ARGUMENT FORMAT: You MUST convert written numbers to DIGITS.
+             (e.g., if user says "thirty days", input "30". If "two weeks", input "14").
+        3. STOPPING: Once you receive a "PREDICTION COMPLETE" message from a tool, STOP immediately and report the result to the user.
         """
     )
     
     inputs = {"messages": [system_instruction, ("user", query)]}
-    result = app.invoke(inputs)
+    
+    # Keep recursion limit at 50
+    result = app.invoke(inputs, config={"recursion_limit": 50})
     return result
