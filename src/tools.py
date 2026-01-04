@@ -2,10 +2,9 @@ import pandas as pd
 import joblib
 import os
 import re
+from typing import Union  # <--- NEW IMPORT
 from langchain_core.tools import tool
-# --- V2 NATIVE IMPORTS ---
 from pydantic import BaseModel, Field, field_validator
-# -------------------------
 from langchain_experimental.tools.python.tool import PythonAstREPLTool
 import boto3
 from dotenv import load_dotenv
@@ -18,20 +17,21 @@ ROOT_DIR = os.path.dirname(CURRENT_DIR)
 DATA_PATH = os.path.join(ROOT_DIR, "data", "transactions.csv")
 MODEL_PATH = os.path.join(ROOT_DIR, "models", "spending_model.pkl")
 
-# --- 1. INTELLIGENT SCHEMA (V2 Syntax) ---
+# --- 1. INTELLIGENT SCHEMA (The Fix) ---
 class ForecastInput(BaseModel):
     """Inputs for the spending prediction tool."""
-    days: int = Field(
-        description="The number of days to forecast. Examples: 7, 14, 30."
+    
+    # CHANGE: Allow int OR str so Groq doesn't block "30"
+    days: Union[int, str] = Field(
+        description="The number of days to forecast. Examples: '7', '14', '30', 'fortnight'."
     )
 
-    # --- THE MAGIC LAYER (V2 Style) ---
+    # --- THE MAGIC LAYER ---
     @field_validator('days', mode='before')
     @classmethod
     def parse_natural_language(cls, v):
         """
-        Intercepts the LLM's input BEFORE validation.
-        If LLM sends 'fortnight' (string), we convert it to 14 (int).
+        Converts the input to an integer.
         """
         # If it's already a number, just return it
         if isinstance(v, int):
@@ -68,6 +68,7 @@ def predict_spending_trend(days: int) -> str:
     """
     Predicts future spending. 
     """
+    # Note: Even though input allowed str, the validator guarantees 'days' is int here.
     
     # 1. Ensure Model Exists
     if not os.path.exists(MODEL_PATH):
