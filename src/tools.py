@@ -1,7 +1,9 @@
 import pandas as pd
 import joblib
 import os
+import re
 from langchain_core.tools import tool
+from langchain_core.pydantic_v1 import BaseModel, Field, validator
 from langchain_experimental.tools.python.tool import PythonAstREPLTool
 import boto3
 from dotenv import load_dotenv
@@ -13,15 +15,58 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 DATA_PATH = os.path.join(ROOT_DIR, "data", "transactions.csv")
 MODEL_PATH = os.path.join(ROOT_DIR, "models", "spending_model.pkl")
-# ------------------
 
-@tool
+# --- 1. INTELLIGENT SCHEMA (The Fix) ---
+class ForecastInput(BaseModel):
+    """Inputs for the spending prediction tool."""
+    days: int = Field(
+        description="The number of days to forecast. Examples: 7, 14, 30."
+    )
+
+    # --- THE MAGIC LAYER ---
+    @validator('days', pre=True)
+    def parse_natural_language(cls, v):
+        """
+        Intercepts the LLM's input BEFORE validation.
+        If LLM sends 'fortnight' (string), we convert it to 14 (int).
+        """
+        # If it's already a number, just return it
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+            
+        # If it's text, perform the mapping here (hidden from the tool logic)
+        text = str(v).lower().strip()
+        
+        # 1. Simple Mapping
+        mapping = {
+            'fortnight': 14, 'biweek': 14, 'week': 7, 
+            'month': 30, 'quarter': 90, 'year': 365
+        }
+        for key, val in mapping.items():
+            if key in text:
+                return val
+        
+        # 2. Regex for things like "2 weeks" (Safety Net)
+        digits = re.findall(r'\d+', text)
+        if digits:
+            num = int(digits[0])
+            if 'week' in text: return num * 7
+            if 'month' in text: return num * 30
+            return num
+            
+        # 3. Last Resort Fallback (prevents crash)
+        return 7
+
+# --- 2. THE TOOL (Remains Pure) ---
+@tool("predict_spending_trend", args_schema=ForecastInput)
 def predict_spending_trend(days: int) -> str:
     """
-    Predicts future spending.
-    Args:
-        days: The number of days into the future to predict (e.g., 7 for next week).
+    Predicts future spending. 
+    NOTICE: 'days' is strictly an integer here. The Validator handles the mess.
     """
+    
     # 1. Ensure Model Exists
     if not os.path.exists(MODEL_PATH):
         try:
@@ -29,9 +74,9 @@ def predict_spending_trend(days: int) -> str:
             s3 = boto3.client('s3', region_name=os.getenv("AWS_DEFAULT_REGION"))
             s3.download_file(os.getenv("S3_BUCKET_NAME"), "spending_model.pkl", MODEL_PATH)
         except Exception as e:
-            return f"Error: Model not found and S3 download failed. {str(e)}"
+            return f"Error: Model not found. {str(e)}"
 
-    # 2. Load Artifact & Predict
+    # 2. Load & Predict
     try:
         artifact = joblib.load(MODEL_PATH)
         model = artifact["model"]
@@ -43,22 +88,16 @@ def predict_spending_trend(days: int) -> str:
         predicted_daily_spend = model.predict(input_df)[0]
         total_projected = predicted_daily_spend * days
         
-        return (f"Based on your trend (Day 0 to {last_day}), "
+        return (f"PREDICTION COMPLETE: Based on your trend (Day 0 to {last_day}), "
                 f"your projected spending for the next {days} days is approx ${total_projected:.2f}.")
     except Exception as e:
         return f"Error running prediction: {str(e)}"
 
-# Initialize Python Analyst with EXPLICIT Name
+# Initialize Python Analyst
 try:
     df = pd.read_csv(DATA_PATH)
-    # We rename the tool so the Agent knows exactly what to call
     python_analyst = PythonAstREPLTool(locals={"df": df})
     python_analyst.name = "python_analyst"
-    python_analyst.description = (
-        "A Python shell for analyzing data. "
-        "The dataframe 'df' is ALREADY LOADED in memory. "
-        "Use this tool to run pandas code on 'df' to answer questions."
-    )
+    python_analyst.description = "A Python shell for analyzing past data. DataFrame 'df' is loaded."
 except Exception as e:
-    print(f"Warning: Could not load data for python_analyst. {e}")
     python_analyst = None
