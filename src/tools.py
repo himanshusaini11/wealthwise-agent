@@ -3,7 +3,9 @@ import joblib
 import os
 import re
 from langchain_core.tools import tool
-from langchain_core.pydantic_v1 import BaseModel, Field, validator
+# --- V2 NATIVE IMPORTS ---
+from pydantic import BaseModel, Field, field_validator
+# -------------------------
 from langchain_experimental.tools.python.tool import PythonAstREPLTool
 import boto3
 from dotenv import load_dotenv
@@ -16,15 +18,16 @@ ROOT_DIR = os.path.dirname(CURRENT_DIR)
 DATA_PATH = os.path.join(ROOT_DIR, "data", "transactions.csv")
 MODEL_PATH = os.path.join(ROOT_DIR, "models", "spending_model.pkl")
 
-# --- 1. INTELLIGENT SCHEMA (The Fix) ---
+# --- 1. INTELLIGENT SCHEMA (V2 Syntax) ---
 class ForecastInput(BaseModel):
     """Inputs for the spending prediction tool."""
     days: int = Field(
         description="The number of days to forecast. Examples: 7, 14, 30."
     )
 
-    # --- THE MAGIC LAYER ---
-    @validator('days', pre=True)
+    # --- THE MAGIC LAYER (V2 Style) ---
+    @field_validator('days', mode='before')
+    @classmethod
     def parse_natural_language(cls, v):
         """
         Intercepts the LLM's input BEFORE validation.
@@ -36,7 +39,7 @@ class ForecastInput(BaseModel):
         if isinstance(v, str) and v.isdigit():
             return int(v)
             
-        # If it's text, perform the mapping here (hidden from the tool logic)
+        # If it's text, perform the mapping here
         text = str(v).lower().strip()
         
         # 1. Simple Mapping
@@ -48,7 +51,7 @@ class ForecastInput(BaseModel):
             if key in text:
                 return val
         
-        # 2. Regex for things like "2 weeks" (Safety Net)
+        # 2. Regex for things like "2 weeks"
         digits = re.findall(r'\d+', text)
         if digits:
             num = int(digits[0])
@@ -56,15 +59,14 @@ class ForecastInput(BaseModel):
             if 'month' in text: return num * 30
             return num
             
-        # 3. Last Resort Fallback (prevents crash)
+        # 3. Last Resort Fallback
         return 7
 
-# --- 2. THE TOOL (Remains Pure) ---
+# --- 2. THE TOOL ---
 @tool("predict_spending_trend", args_schema=ForecastInput)
 def predict_spending_trend(days: int) -> str:
     """
     Predicts future spending. 
-    NOTICE: 'days' is strictly an integer here. The Validator handles the mess.
     """
     
     # 1. Ensure Model Exists
