@@ -14,3 +14,4 @@ venv/
 # Data (Optional: keep sample data, ignore large real data)
 # data/
 # mlruns/
+requirements.lock
