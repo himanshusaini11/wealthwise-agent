@@ -8,32 +8,32 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
       - name: Deploy to AWS EC2
         uses: appleboy/ssh-action@v0.1.10
-        id: deploy_step  # We give this ID so we can check if it failed later
+        id: deploy_step
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /home/ubuntu/wealthwise-agent
-            # Make sure script is executable
+            
+            # STEP 1: Pull latest code first (Critical Fix)
+            git pull origin main
+            
+            # STEP 2: Make executable and run
             chmod +x deploy.sh
-            # Run the script
             ./deploy.sh
 
       - name: Send Email on Failure (Low Disk Space)
-        if: failure() # This only runs if the previous step CRASHED (exit 1)
+        if: failure() # Runs only if the step above crashes (exit 1)
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 465
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "ALERT: Deployment Failed (Low Disk Space)"
+          subject: "ALERT: WealthWise Deployment Failed"
           to: ${{ secrets.EMAIL_USERNAME }}
           from: GitHub Actions
           body: |
