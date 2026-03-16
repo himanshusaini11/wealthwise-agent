@@ -51,4 +51,4 @@ build/
 *.log
 
 scripts/debug_query.py
-report.md
+report.mdprompts/
