@@ -1,0 +1,48 @@
+[project]
+name = "wealthwise-agent"
+version = "1.0.1"
+description = "Autonomous AI financial advisor with ML-based spending forecasts"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit==1.52.2",
+    "pandas==2.3.3",
+    "python-dotenv==1.2.1",
+    "Faker==40.1.0",
+    "watchdog==6.0.0",
+    "langchain==1.2.0",
+    "langchain-core==1.2.5",
+    "langchain-community==0.4.1",
+    "langchain-experimental==0.4.1",
+    "langchain-google-genai==4.1.2",
+    "langchain-groq==1.1.1",
+    "langchain-anthropic",
+    "langgraph==1.0.5",
+    "langgraph-checkpoint-sqlite",
+    "scikit-learn==1.8.0",
+    "joblib==1.5.3",
+    "numpy==2.4.0",
+    "mlflow==3.8.1",
+    "boto3==1.42.21",
+    "pydantic-settings>=2.10.1",
+    "groq",
+    "anthropic",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-cov==6.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -v"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.5",
+    "pytest-cov==6.1.0",
+]

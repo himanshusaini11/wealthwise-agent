@@ -1,96 +1,212 @@
-# WealthWise: Autonomous AI Financial Agent
+# WealthWise Agent
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)  ![Docker](https://img.shields.io/badge/docker-production-blue) ![AWS](https://img.shields.io/badge/AWS-EC2-orange) ![Python](https://img.shields.io/badge/Python-3.11-yellow)
+Autonomous AI financial advisor that analyzes transaction history and forecasts spending trends via natural language queries.
 
-**WealthWise** is a stateful AI agent capable of analyzing financial transaction data and forecasting future spending trends. Unlike standard chatbots, it uses **LangGraph** to maintain conversation state and executes custom Python tools for precise data analysis.
+## Features
 
-The system is deployed on **AWS EC2** using a fully automated **CI/CD pipeline** with self-healing capabilities.
+- Natural language financial queries ("How much did I spend on food last month?")
+- ML-based spending forecasts with temporal features (R²=0.97, MAE=$2.27/day)
+- Multi-model support with sidebar selector: Claude Haiku 3.5, Claude Sonnet 4.5, Gemini 2.0 Flash, Groq Llama 3.3 70B
+- Per-query token usage display with context window progress bar
+- Persistent conversation memory via LangGraph SqliteSaver checkpointing
+- Graceful quota and rate-limit error handling with user-facing messages
+- Structured logging across all modules with per-query timing
+- Production CI/CD: test gate (80% coverage floor) blocks deploy on failure
 
----
+## Architecture
 
-## System Architecture
+### Stack
 
-I designed this system to mimic a production-grade ML environment, moving away from "notebook code" to robust, containerized microservices.
+| Layer | Technology |
+|---|---|
+| Agent runtime | LangGraph StateGraph — custom ReAct loop with conditional END routing |
+| LLM providers | Claude Haiku 3.5 · Claude Sonnet 4.5 · Gemini 2.0 Flash · Groq Llama 3.3 |
+| Analysis tool | PythonAstREPLTool (pandas DataFrame) |
+| Forecast tool | Custom @tool · scikit-learn Pipeline · 4-feature LinearRegression |
+| ML metrics | R²=0.97 · MAE=$2.27/day · RMSE=$3.15/day (held-out test set) |
+| Experiment tracking | MLflow (SQLite backend) |
+| Frontend | Streamlit |
+| Config validation | pydantic-settings — fails fast on missing API keys |
+| Conversation memory | LangGraph SqliteSaver (data/checkpoints.db) |
+| Package management | uv |
+| Infrastructure | Docker · Docker Compose · AWS EC2 (t2.micro) |
+| CI/CD | GitHub Actions — test gate → deploy |
 
-```text
-+-----------------------------------------------------------------------------------------------+
-|                            WEALTHWISE AGENT: SYSTEM ARCHITECTURE                              |
-+-----------------------------------------------------------------------------------------------+
+### Agent Flow
 
-        1. DEVELOPMENT                  2. CI/CD PIPELINE                3. PRODUCTION (AWS Cloud)
-   (Local Environment)               (GitHub Actions)                  (EC2 Ubuntu t2.micro)
-
- +---------------------+          +---------------------+          +----------------------------+
- | 💻 VS Code (Mac)    |          | 🐙 GitHub Repo      |          | ☁️  AWS EC2 Instance       |
- |                     |          |                     |          |                            |
- |  • Code Logic       |   git    |  • Secrets (ENV)    |   SSH    |  +----------------------+  |
- |  • Pydantic Schemas |   push   |  • Workflow:        | Deploy   |  | 🐳 Docker Container  |  |
- |  • Unit Tests       |--------->|    1. Login to AWS  |--------->|  |                      |  |
- +---------------------+          |    2. Disk Check    |          |  |  [Streamlit UI]      |  |
-                                  |    3. Auto-Deploy   |          |  |        |             |  |
-                                  +---------------------+          |  |        v             |  |
-                                                                   |  |  [LangGraph Brain]   |  |
-                                                                   |  |   /          \       |  |
-      4. USER INTERACTION                                          |  |  /            \      |  |
-                                                                   |  |[Python Tool] [LLM]   |  |
- +---------------------+          +---------------------+          |  | (Pandas/ML) (Groq)   |  |
- | 👤 User (Browser)   |  HTTP    | 🛡️ Firewall         |          |  +----------------------+  |
- |                     | Request  | (Security Group)    |          +----------------------------+
- | "Forecast my rent"  |--------->| Port 8501           |                        ^
- +---------------------+          +----------+----------+                        |
-                                             |                                   |
-                                             +-----------------------------------+
+```
+User query
+    │
+    ▼
+Streamlit (app.py)
+    │
+    ▼
+process_query()
+    │
+    ▼
+StateGraph
+    │
+    ▼
+┌─────────────┐    tool_calls present    ┌──────────────┐
+│  agent node │ ────────────────────────▶│  tools node  │
+│    (LLM)    │                          │  (ToolNode)  │
+└─────────────┘                          └──────────────┘
+       │                                        │
+       │ no tool_calls                          │ "PREDICTION COMPLETE"?
+       │                                        │
+       ▼                                 Yes ───┤
+      END ◀──────────────────────────────       │
+                                         No ────┘
+                                         │
+                                         └──────▶ agent node (loop)
+    │
+    ▼
+response text + token usage dict
+    │
+    ▼
+Streamlit (renders response + usage caption)
 ```
 
+## Project Structure
 
-## Key Features
-1. Stateful AI Agent (LangGraph)
-    - Uses a graph-based orchestration engine (LangGraph) instead of simple linear chains.
-    - Maintains memory of past interactions (e.g., "Forecast my spending" -> "Why is it so high?" -> Context preserved).
+```
+wealthwise-agent/
+├── app.py                          # Streamlit UI — chat interface, model selector sidebar, session stats
+├── src/
+│   ├── __init__.py                 # Package marker
+│   ├── config.py                   # pydantic-settings Settings class — validates API keys on startup
+│   ├── graph.py                    # LangGraph StateGraph — agent/tools nodes, routing, process_query()
+│   ├── tools.py                    # predict_spending_trend @tool, _build_python_analyst factory, ForecastInput
+│   └── logger.py                   # Structured logging setup shared across all modules
+├── scripts/
+│   ├── generate_data.py            # Synthetic transaction CSV with upward trend + weekend multiplier
+│   ├── train_pipeline.py           # scikit-learn Pipeline training, MLflow tracking, quality gate
+│   └── debug_query.py              # Dev utility — runs 5 consecutive queries with WARNING-level logging
+├── tests/
+│   ├── __init__.py                 # Package marker
+│   ├── test_graph.py               # 18 tests — get_llm(), _extract_response(), process_query(), _should_continue()
+│   └── test_tools.py               # 18 tests — ForecastInput validator, predict tool, S3 fallback, python_analyst
+├── data/
+│   ├── transactions.csv            # 90-day synthetic transaction history (generated by generate_data.py)
+│   └── checkpoints.db              # LangGraph SqliteSaver conversation memory (auto-created)
+├── models/
+│   └── spending_model.pkl          # Trained scikit-learn Pipeline artifact (generated by train_pipeline.py)
+├── pyproject.toml                  # Project metadata and dependencies (uv)
+├── uv.lock                         # Pinned lockfile — 155 packages
+├── Dockerfile                      # uv-based container build
+├── docker-compose.yml              # Single-service compose for local and EC2 deployment
+├── deploy.sh                       # EC2 deploy script — docker-compose up --build
+├── .github/
+│   └── workflows/
+│       └── deploy.yml              # CI/CD — test job (uv sync + pytest) gates the deploy job
+├── pytest.ini                      # pytest configuration (also mirrored in pyproject.toml)
+└── .env.example                    # Environment variable template
+```
 
-2. Robust Tool Engineering (Pydantic V2)
-    - Problem: LLMs often hallucinate input formats (e.g., sending "fortnight" instead of 14).
-    - Solution: Implemented Pydantic Validators (@field_validator) to intercept LLM inputs. The system automatically translates natural language (e.g., "next month", "2 weeks") into integers before the tool executes, preventing recursion loops and API rejections.
+## Quick Start
 
-3. Production CI/CD Pipeline
-    - GitHub Actions: Automatically deploys to AWS EC2 on every push to main.
-    - Disk Management: Custom shell scripts monitor disk usage on the t2.micro instance, automatically pruning old Docker images to prevent storage crashes.
-    - Alerting: Sends email notifications if deployment fails or disk space is critical.
+### Prerequisites
 
-4. Infrastructure as Code
-    - Docker Compose: Orchestrates the application dependencies.
-    - Environment Locking: Uses requirements.txt with pinned versions to eliminate environment drift between Local and Production.
+- Python 3.11+
+- uv — `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- At least one LLM API key — Groq is free at [console.groq.com](https://console.groq.com)
 
-## Tech Stack
-- LLM: Llama-3-70b (via Groq API) / Gemini Flash
-- Frameworks: LangChain, LangGraph, Pandas, Scikit-Learn
-- Validation: Pydantic V2
-- DevOps: Docker, AWS EC2, GitHub Actions, Bash Scripting
-
-## How to Run Locally
-1. Clone the repository
+### Local Setup
 
 ```bash
-git clone [https://github.com/himanshusaini11/wealthwise-agent.git](https://github.com/himanshusaini11/wealthwise-agent.git)
+git clone https://github.com/himanshusaini11/wealthwise-agent.git
 cd wealthwise-agent
+uv sync
+cp .env.example .env
+# Edit .env with your API keys
+uv run python scripts/generate_data.py
+uv run python scripts/train_pipeline.py
+uv run streamlit run app.py
 ```
 
-2. Set up Environment Variables Create a .env file:
+### Environment Variables
 
-``` bash
-GROQ_API_KEY=your_key_here
-AWS_ACCESS_KEY_ID=your_aws_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret
-S3_BUCKET_NAME=your_bucket
+| Variable | Required | Description |
+|---|---|---|
+| MODEL_PROVIDER | Yes | Active provider: `claude-haiku`, `claude-sonnet`, `gemini`, `groq` |
+| GROQ_API_KEY | If groq | Free at console.groq.com |
+| GOOGLE_API_KEY | If gemini | Google AI Studio |
+| ANTHROPIC_API_KEY | If claude-* | console.anthropic.com |
+| AWS_DEFAULT_REGION | No | For S3 model backup (default: us-east-1) |
+| S3_BUCKET_NAME | No | S3 bucket for model artifact backup |
+| R2_THRESHOLD | No | Model quality gate (default: -1.0 dev, use 0.3 in prod) |
+
+## Testing
+
+```bash
+uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
-3. Run with Docker
+
+Current: **36 tests · 83% coverage**
+
+| Module | Coverage | What's tested |
+|---|---|---|
+| src/tools.py | 92% | ForecastInput validator, predict tool, S3 fallback, python_analyst init |
+| src/config.py | 94% | Provider validation, missing key detection |
+| src/graph.py | 74% | Routing logic, response extraction, process_query |
+| src/logger.py | 91% | Logger initialization |
+
+## ML Model
+
+### Features
+
+| Feature | Description |
+|---|---|
+| Days_Since_Start | Days elapsed from first transaction |
+| day_of_week | 0=Monday … 6=Sunday |
+| month | Calendar month (1–12) |
+| is_weekend | 1 if Saturday or Sunday |
+
+### Training
+
+- Pipeline: StandardScaler → LinearRegression
+- Split: 80/20 train/test (random_state=42)
+- Excludes fixed categories (Rent, Subscriptions) to prevent outlier distortion
+- Metrics logged to MLflow on every run
+- Quality gate: raises `ValueError` if R² < `R2_THRESHOLD`
+
+### Results (current run)
+
+| Metric | Value |
+|---|---|
+| R² | 0.97 |
+| MAE | $2.27/day |
+| RMSE | $3.15/day |
+| Train samples | 72 |
+| Test samples | 19 |
+
+Retrain anytime:
+
+```bash
+uv run python scripts/train_pipeline.py
+```
+
+## CI/CD Pipeline
+
+Two-job GitHub Actions workflow on push to `main`:
+
+1. **test** — installs deps via `uv sync --frozen`, runs pytest with `--cov-fail-under=80`. Deploy is blocked if any test fails or coverage drops below 80%.
+2. **deploy** — SSH to EC2, `git pull`, `docker-compose up --build`. Only runs if the test job passes (`needs: test`).
+
+## Docker
 
 ```bash
 docker-compose up --build
 ```
 
-4. Access the App Open http://localhost:8501 in your browser.
+Uses uv inside the container (copies uv binary from `ghcr.io/astral-sh/uv`). Exposes port 8501.
 
-## Future Improvements
-- Multi-Modal Inputs: Allow users to upload bank statement PDFs.
-- RAG Integration: Connect to a vector database to search through financial literacy documents.
+## Known Limitations
+
+- Trained on synthetic data — predictions will improve significantly with real bank transaction data
+- Groq Llama 3.3 has intermittent tool-call failures (~30% rate); retry logic (3 attempts) handles most cases. Gemini or Claude recommended for production use.
+- Free-tier API quotas apply; the model selector sidebar lets users switch providers without restarting the app.
+
+## License
+
+MIT

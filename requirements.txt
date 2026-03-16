@@ -1,15 +1,18 @@
+# Kept for reference only. Use pyproject.toml + uv for dependency management.
 # --- Core Application ---
 streamlit==1.52.2
 pandas==2.3.3
 python-dotenv==1.2.1
 Faker==40.1.0
 watchdog==6.0.0
+pydantic-settings==2.9.1
 
 # --- AI & LangChain Ecosystem ---
 langchain==1.2.0
 langchain-core==1.2.5
 langchain-community==0.4.1
 langchain-experimental==0.4.1
+langchain-anthropic
 langchain-google-genai==4.1.2
 langchain-groq==1.1.1
 langgraph==1.0.5
@@ -23,3 +26,7 @@ mlflow==3.8.1
 
 # --- Cloud Infrastructure ---
 boto3==1.42.21
+
+# --- Testing ---
+pytest==8.3.5
+pytest-cov==6.1.0

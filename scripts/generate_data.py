@@ -1,84 +1,96 @@
-import pandas as pd
-import random
-from faker import Faker
-from datetime import datetime, timedelta
 import os
+import random
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
 
 # --- PATH SETUP ---
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 DATA_DIR = os.path.join(ROOT_DIR, "data")
-OUTPUT_PATH = os.path.join(DATA_DIR, "transactions.csv")
 os.makedirs(DATA_DIR, exist_ok=True)
 # ------------------
 
-fake = Faker()
 
 def generate_transactions():
     print("Generating realistic financial data...")
-    
-    data = []
-    # 90-day window
-    end_date = datetime.now()
+
+    end_date = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
     start_date = end_date - timedelta(days=90)
-    
-    # 1. FIXED MONTHLY BILLS (The "Rent" Fix)
-    # Iterate through each month in the window
+
+    rows = []
+
+    # Fixed monthly items
     current = start_date
     while current <= end_date:
-        # If it's the 1st of the month, pay Rent
         if current.day == 1:
-            data.append({
-                "Date": current.strftime("%Y-%m-%d"),
-                "Category": "Rent",
-                "Amount": -1500.00,
-                "Description": "Monthly Apartment Rent"
-            })
-            # Also pay a Subscription
-            data.append({
-                "Date": current.strftime("%Y-%m-%d"),
-                "Category": "Subscriptions",
-                "Amount": -14.99,
-                "Description": "Netflix Premium"
-            })
+            rows.append({"Date": current.strftime("%Y-%m-%d"),
+                        "Category": "Rent",
+                        "Amount": -1500.00,
+                        "Description": "Monthly rent"})
+            rows.append({"Date": current.strftime("%Y-%m-%d"),
+                        "Category": "Subscriptions",
+                        "Amount": -14.99,
+                        "Description": "Netflix"})
         current += timedelta(days=1)
 
-    # 2. DAILY DISCRETIONARY SPENDING (Randomized)
-    # These happen randomly (e.g., 2-4 times a day)
-    discretionary_cats = {
-        'Food': (-30, -10),
-        'Entertainment': (-80, -20),
-        'Transport': (-20, -5),
-        'Shopping': (-150, -30),
-        'Coffee': (-8, -4)
+    # Daily discretionary spending with trend + weekend effect
+    categories = {
+        "Food":          (-10, -30),
+        "Coffee":        (-4,  -8),
+        "Transport":     (-5,  -20),
+        "Entertainment": (-20, -80),
+        "Shopping":      (-30, -150),
     }
-    
-    # Loop through every single day
-    current = start_date
-    while current <= end_date:
-        # Randomly decide how many transactions today (0 to 3)
-        num_transactions = random.randint(0, 3)
-        
-        for _ in range(num_transactions):
-            category = random.choice(list(discretionary_cats.keys()))
-            min_amt, max_amt = discretionary_cats[category]
-            amount = round(random.uniform(min_amt, max_amt), 2)
-            
-            data.append({
-                "Date": current.strftime("%Y-%m-%d"),
-                "Category": category,
-                "Amount": amount,
-                "Description": fake.sentence(nb_words=4)
-            })
-        current += timedelta(days=1)
 
-    # 3. Save Sorted Data
-    df = pd.DataFrame(data)
-    df = df.sort_values(by="Date")
-    df.to_csv(OUTPUT_PATH, index=False)
-    print(f"Realistic Data saved to: {OUTPUT_PATH}")
-    print(f"   - Rent entries: {len(df[df['Category']=='Rent'])}")
+    for day_idx in range(91):
+        date = start_date + timedelta(days=day_idx)
+        date_str = date.strftime("%Y-%m-%d")
+        dow = date.weekday()
+
+        # Trend: base $60/day growing to $105/day over 90 days
+        base_spend = 60 + (day_idx * 0.5)
+
+        # Weekend multiplier
+        if dow >= 5:
+            base_spend *= 1.4
+
+        # Pick 2-4 categories randomly
+        num_categories = random.randint(2, 4)
+        chosen = random.sample(list(categories.keys()), num_categories)
+
+        # Generate raw amounts
+        raw = {}
+        for cat in chosen:
+            lo, hi = categories[cat]
+            raw[cat] = random.uniform(lo, hi)  # negative values
+
+        # Scale to hit base_spend target
+        raw_total = sum(abs(v) for v in raw.values())
+        scale = base_spend / raw_total if raw_total > 0 else 1.0
+
+        for cat, amount in raw.items():
+            scaled_amount = round(amount * scale, 2)
+            rows.append({
+                "Date": date_str,
+                "Category": cat,
+                "Amount": scaled_amount,
+                "Description": f"{cat} expense",
+            })
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values("Date").reset_index(drop=True)
+
+    output_path = os.path.join(ROOT_DIR, "data", "transactions.csv")
+    df.to_csv(output_path, index=False)
+
+    rent_count = len(df[df["Category"] == "Rent"])
+    print(f"Realistic Data saved to: {output_path}")
+    print(f"   - Rent entries: {rent_count}")
     print(f"   - Total rows: {len(df)}")
+    print(f"   - Date range: {df['Date'].min()} to {df['Date'].max()}")
+
 
 if __name__ == "__main__":
     generate_transactions()
