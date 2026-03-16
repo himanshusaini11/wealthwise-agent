@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   wealthwise:
     build: .
@@ -7,5 +5,3 @@ services:
       - "8501:8501"
     env_file:
       - .env
-    volumes:
-      - .:/app
