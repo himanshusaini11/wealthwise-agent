@@ -66,7 +66,7 @@ for message in st.session_state.messages:
         if message["role"] == "assistant":
             st.write(message["content"])
         else:
-            st.markdown(message["content"])
+            st.write(message["content"])
 
 if prompt := st.chat_input("How can I help you today?"):
     st.chat_message("user").markdown(prompt)
