@@ -46,14 +46,16 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            cd /home/ubuntu/wealthwise-agent
+            REPO_DIR="/home/ubuntu/wealthwise-agent"
+            REPO_URL="https://github.com/himanshusaini11/wealthwise-agent.git"
 
-            # STEP 1: Pull latest code first (Critical Fix)
-            git pull origin main
+            # Bootstrap: clone on first deploy so deploy.sh exists
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              git clone $REPO_URL $REPO_DIR
+            fi
 
-            # STEP 2: Make executable and run
-            chmod +x deploy.sh
-            ./deploy.sh
+            chmod +x $REPO_DIR/deploy.sh
+            $REPO_DIR/deploy.sh
 
       - name: Send Email on Failure (Low Disk Space)
         if: failure() # Runs only if the step above crashes (exit 1)
