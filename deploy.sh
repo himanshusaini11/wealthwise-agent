@@ -1,16 +1,26 @@
 #!/bin/bash
 
-# 1. Update Code
-echo "Pulling the updated code."
-git pull origin main
+# 1. Clone or pull latest code
+REPO_DIR="/home/ubuntu/wealthwise-agent"
+REPO_URL="https://github.com/himanshusaini11/wealthwise-agent.git"
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+    echo "First deploy — cloning repository..."
+    git clone $REPO_URL $REPO_DIR
+else
+    echo "Updating existing repository..."
+    cd $REPO_DIR && git pull origin main
+fi
+
+cd $REPO_DIR
 
 # 2. Stop Containers
 echo "Stopping containers."
 docker-compose down
 
-# 3. Clean Up (Aggressive)
+# 3. Clean Up
 echo "Pruning unused images."
-docker system prune -a -f
+docker image prune -f
 
 # 4. Check Disk Space
 # Get available space in KB. 3GB approx 3,145,728 KB
