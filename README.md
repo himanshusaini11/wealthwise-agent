@@ -2,16 +2,27 @@
 
 Autonomous AI financial advisor that analyzes transaction history and forecasts spending trends via natural language queries.
 
+**Live demo:** http://3.89.224.121:8501
+
+---
+
 ## Features
 
 - Natural language financial queries ("How much did I spend on food last month?")
-- ML-based spending forecasts with temporal features (R²=0.97, MAE=$2.27/day)
-- Multi-model support with sidebar selector: Claude Haiku 3.5, Claude Sonnet 4.5, Gemini 2.0 Flash, Groq Llama 3.3 70B
-- Per-query token usage display with context window progress bar
-- Persistent conversation memory via LangGraph SqliteSaver checkpointing
-- Graceful quota and rate-limit error handling with user-facing messages
-- Structured logging across all modules with per-query timing
-- Production CI/CD: test gate (80% coverage floor) blocks deploy on failure
+- ML-based spending forecasts — scikit-learn Pipeline with 4 temporal features
+- Four interchangeable LLM backends selectable from the sidebar without restarting the app:
+  - Claude Haiku 3.5 (`claude-haiku-3-5-20251001`)
+  - Claude Sonnet 4.5 (`claude-sonnet-4-5-20251014`)
+  - Gemini 2.0 Flash (`gemini-2.0-flash`)
+  - Groq Llama 3.3 70B (`llama-3.3-70b-versatile`)
+- Per-query token usage display and context window progress bar
+- Persistent conversation memory via LangGraph `SqliteSaver` (SQLite checkpoints)
+- Automatic provider fallback if primary LLM initialisation fails
+- User-facing error messages for rate limits, quota exhaustion, and tool failures
+- Groq tool-call retry logic (up to 3 attempts with fresh agent rebuild per attempt)
+- Structured logging with per-query elapsed time across all modules
+- ML model S3 fallback — downloads `spending_model.pkl` from S3 if not found locally
+- CI/CD pipeline with pytest coverage gate (80% floor) blocking deploy on failure
 
 ## Architecture
 
@@ -19,18 +30,18 @@ Autonomous AI financial advisor that analyzes transaction history and forecasts 
 
 | Layer | Technology |
 |---|---|
-| Agent runtime | LangGraph StateGraph — custom ReAct loop with conditional END routing |
-| LLM providers | Claude Haiku 3.5 · Claude Sonnet 4.5 · Gemini 2.0 Flash · Groq Llama 3.3 |
-| Analysis tool | PythonAstREPLTool (pandas DataFrame) |
-| Forecast tool | Custom @tool · scikit-learn Pipeline · 4-feature LinearRegression |
-| ML metrics | R²=0.97 · MAE=$2.27/day · RMSE=$3.15/day (held-out test set) |
-| Experiment tracking | MLflow (SQLite backend) |
+| Agent runtime | LangGraph `StateGraph` — custom ReAct loop with `_should_continue` conditional routing |
+| LLM providers | Claude Haiku 3.5 · Claude Sonnet 4.5 · Gemini 2.0 Flash · Groq Llama 3.3 70B |
+| Transaction analysis | `PythonAstREPLTool` (`python_analyst`) — pandas DataFrame, pre-loaded from CSV |
+| Spending forecast | `predict_spending_trend` `@tool` — scikit-learn Pipeline, 4-feature LinearRegression |
+| Conversation memory | `LangGraph SqliteSaver` → `data/checkpoints.db` |
+| Context window limits | Claude: 200k · Gemini: 1M · Groq: 128k |
+| ML experiment tracking | MLflow (SQLite backend → `mlflow.db`) |
 | Frontend | Streamlit |
-| Config validation | pydantic-settings — fails fast on missing API keys |
-| Conversation memory | LangGraph SqliteSaver (data/checkpoints.db) |
+| Config & validation | `pydantic-settings` — fails fast on missing API keys at startup |
 | Package management | uv |
 | Infrastructure | Docker · Docker Compose · AWS EC2 (t2.micro) |
-| CI/CD | GitHub Actions — test gate → deploy |
+| CI/CD | GitHub Actions — `test` job gates `deploy` job (`needs: test`) |
 
 ### Agent Flow
 
@@ -39,69 +50,76 @@ User query
     │
     ▼
 Streamlit (app.py)
+    │  thread_id (UUID per session)
+    ▼
+process_query(query, provider, thread_id)
+    │
+    │  builds fresh StateGraph + SqliteSaver on each call
+    ▼
+┌──────────────────────────────────────────────┐
+│  StateGraph (AgentState: messages list)       │
+│                                               │
+│  ┌────────────┐   tool_calls present          │
+│  │ agent node │──────────────────────────┐    │
+│  │   (LLM)    │                          │    │
+│  └────────────┘                          ▼    │
+│        │                         ┌──────────┐ │
+│        │ no tool_calls           │  tools   │ │
+│        │                         │  node    │ │
+│        ▼                         └──────────┘ │
+│       END ◀── "PREDICTION COMPLETE" ──────────┘
+│                in ToolMessage                  │
+│                                               │
+│       END ◀── no tool_calls in AIMessage      │
+└──────────────────────────────────────────────┘
     │
     ▼
-process_query()
+_extract_response() + _extract_usage()
     │
     ▼
-StateGraph
-    │
-    ▼
-┌─────────────┐    tool_calls present    ┌──────────────┐
-│  agent node │ ────────────────────────▶│  tools node  │
-│    (LLM)    │                          │  (ToolNode)  │
-└─────────────┘                          └──────────────┘
-       │                                        │
-       │ no tool_calls                          │ "PREDICTION COMPLETE"?
-       │                                        │
-       ▼                                 Yes ───┤
-      END ◀──────────────────────────────       │
-                                         No ────┘
-                                         │
-                                         └──────▶ agent node (loop)
-    │
-    ▼
-response text + token usage dict
-    │
-    ▼
-Streamlit (renders response + usage caption)
+(response_text, usage_dict) → Streamlit
 ```
+
+**Routing logic (`_should_continue`):**
+- `AIMessage` with no `tool_calls` → `END`
+- `AIMessage` with `tool_calls` → `"tools"`
+- `ToolMessage` containing `"PREDICTION COMPLETE"` → `END`
+- Any other `ToolMessage` → `"agent"` (continue loop)
 
 ## Project Structure
 
 ```
 wealthwise-agent/
-├── app.py                          # Streamlit UI — chat interface, model selector sidebar, session stats
+├── app.py                        # Streamlit UI — chat, model selector sidebar, token usage display
 ├── src/
-│   ├── __init__.py                 # Package marker
-│   ├── config.py                   # pydantic-settings Settings class — validates API keys on startup
-│   ├── graph.py                    # LangGraph StateGraph — agent/tools nodes, routing, process_query()
-│   ├── tools.py                    # predict_spending_trend @tool, _build_python_analyst factory, ForecastInput
-│   └── logger.py                   # Structured logging setup shared across all modules
+│   ├── __init__.py               # Package marker
+│   ├── config.py                 # pydantic-settings Settings — validates API keys on startup
+│   ├── graph.py                  # StateGraph agent, get_llm(), process_query(), retry logic
+│   ├── tools.py                  # predict_spending_trend @tool, _build_python_analyst factory
+│   └── logger.py                 # Structured logging setup shared across all modules
 ├── scripts/
-│   ├── generate_data.py            # Synthetic transaction CSV with upward trend + weekend multiplier
-│   ├── train_pipeline.py           # scikit-learn Pipeline training, MLflow tracking, quality gate
-│   └── debug_query.py              # Dev utility — runs 5 consecutive queries with WARNING-level logging
+│   ├── generate_data.py          # Generates synthetic transactions.csv (90-day trend data)
+│   └── train_pipeline.py         # Trains scikit-learn Pipeline, MLflow tracking, S3 upload
 ├── tests/
-│   ├── __init__.py                 # Package marker
-│   ├── test_graph.py               # 18 tests — get_llm(), _extract_response(), process_query(), _should_continue()
-│   └── test_tools.py               # 18 tests — ForecastInput validator, predict tool, S3 fallback, python_analyst
+│   ├── __init__.py               # Package marker
+│   ├── test_graph.py             # 18 tests — get_llm, _extract_response, process_query, routing
+│   └── test_tools.py             # 18 tests — ForecastInput validator, predict tool, S3 fallback
 ├── data/
-│   ├── transactions.csv            # 90-day synthetic transaction history (generated by generate_data.py)
-│   └── checkpoints.db              # LangGraph SqliteSaver conversation memory (auto-created)
-├── models/
-│   └── spending_model.pkl          # Trained scikit-learn Pipeline artifact (generated by train_pipeline.py)
-├── pyproject.toml                  # Project metadata and dependencies (uv)
-├── uv.lock                         # Pinned lockfile — 155 packages
-├── Dockerfile                      # uv-based container build
-├── docker-compose.yml              # Single-service compose for local and EC2 deployment
-├── deploy.sh                       # EC2 deploy script — docker-compose up --build
+│   └── checkpoints.db            # SqliteSaver conversation memory (auto-created at runtime)
+├── models/                       # Trained model artifact (generated by train_pipeline.py)
+├── pyproject.toml                # Project metadata and all dependencies
+├── uv.lock                       # Pinned lockfile (155 packages)
+├── Dockerfile                    # uv-based image — copies uv binary from ghcr.io/astral-sh/uv
+├── docker-compose.yml            # Single-service compose — maps port 8501, reads .env
+├── deploy.sh                     # EC2 deploy — clone-or-pull, prune, disk check, compose up
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml              # CI/CD — test job (uv sync + pytest) gates the deploy job
-├── pytest.ini                      # pytest configuration (also mirrored in pyproject.toml)
-└── .env.example                    # Environment variable template
+│       └── deploy.yml            # CI/CD — uv test gate then SSH deploy to EC2
+├── pytest.ini                    # pytest config (testpaths, addopts, naming conventions)
+└── .env.example                  # Environment variable template
 ```
+
+> `data/transactions.csv`, `models/spending_model.pkl`, `mlflow.db`, `mlruns/`, `.venv/`, and `data/checkpoints.db` are git-ignored (regenerated at runtime).
 
 ## Quick Start
 
@@ -118,23 +136,27 @@ git clone https://github.com/himanshusaini11/wealthwise-agent.git
 cd wealthwise-agent
 uv sync
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env — set MODEL_PROVIDER and the matching API key
 uv run python scripts/generate_data.py
 uv run python scripts/train_pipeline.py
 uv run streamlit run app.py
 ```
 
+Open http://localhost:8501.
+
 ### Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
-| MODEL_PROVIDER | Yes | Active provider: `claude-haiku`, `claude-sonnet`, `gemini`, `groq` |
-| GROQ_API_KEY | If groq | Free at console.groq.com |
-| GOOGLE_API_KEY | If gemini | Google AI Studio |
-| ANTHROPIC_API_KEY | If claude-* | console.anthropic.com |
-| AWS_DEFAULT_REGION | No | For S3 model backup (default: us-east-1) |
-| S3_BUCKET_NAME | No | S3 bucket for model artifact backup |
-| R2_THRESHOLD | No | Model quality gate (default: -1.0 dev, use 0.3 in prod) |
+| `MODEL_PROVIDER` | Yes | `claude-haiku` · `claude-sonnet` · `gemini` · `groq` |
+| `ANTHROPIC_API_KEY` | If `claude-haiku` or `claude-sonnet` | [console.anthropic.com](https://console.anthropic.com) |
+| `GROQ_API_KEY` | If `groq` | Free at [console.groq.com](https://console.groq.com) |
+| `GOOGLE_API_KEY` | If `gemini` | Google AI Studio |
+| `AWS_DEFAULT_REGION` | No | S3 model backup region (default: `us-east-1`) |
+| `S3_BUCKET_NAME` | No | S3 bucket for model artifact fallback |
+| `R2_THRESHOLD` | No | Training quality gate (default: `-1.0`; use `0.3` in prod) |
+
+pydantic-settings validates that the API key for the active `MODEL_PROVIDER` is non-empty and raises a `ValidationError` at startup if it is missing.
 
 ## Testing
 
@@ -142,56 +164,72 @@ uv run streamlit run app.py
 uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-Current: **36 tests · 83% coverage**
+**36 tests · 83% total coverage**
 
-| Module | Coverage | What's tested |
+| Module | Coverage | Tested behaviours |
 |---|---|---|
-| src/tools.py | 92% | ForecastInput validator, predict tool, S3 fallback, python_analyst init |
-| src/config.py | 94% | Provider validation, missing key detection |
-| src/graph.py | 74% | Routing logic, response extraction, process_query |
-| src/logger.py | 91% | Logger initialization |
+| `src/config.py` | 94% | Provider literals, per-provider key validation, missing key detection |
+| `src/tools.py` | 92% | `ForecastInput` natural-language parser (13 cases), predict tool, S3 fallback, `_load_model` error |
+| `src/logger.py` | 91% | Logger initialisation |
+| `src/graph.py` | 74% | `get_llm` (4 providers), `_extract_response` (5 cases + 2 edge cases), `process_query` tuple/error, `_should_continue` (4 routing cases) |
 
 ## ML Model
 
-### Features
+### Feature Engineering
 
 | Feature | Description |
 |---|---|
-| Days_Since_Start | Days elapsed from first transaction |
-| day_of_week | 0=Monday … 6=Sunday |
-| month | Calendar month (1–12) |
-| is_weekend | 1 if Saturday or Sunday |
+| `Days_Since_Start` | Days elapsed from the first transaction date |
+| `day_of_week` | 0 = Monday … 6 = Sunday |
+| `month` | Calendar month (1–12) |
+| `is_weekend` | 1 if Saturday or Sunday, else 0 |
 
-### Training
+Fixed recurring categories (`Rent`, `Subscriptions`) are excluded from training — they are not trend-driven and would otherwise dominate the regression.
 
-- Pipeline: StandardScaler → LinearRegression
-- Split: 80/20 train/test (random_state=42)
-- Excludes fixed categories (Rent, Subscriptions) to prevent outlier distortion
-- Metrics logged to MLflow on every run
-- Quality gate: raises `ValueError` if R² < `R2_THRESHOLD`
+### Pipeline
 
-### Results (current run)
-
-| Metric | Value |
-|---|---|
-| R² | 0.97 |
-| MAE | $2.27/day |
-| RMSE | $3.15/day |
-| Train samples | 72 |
-| Test samples | 19 |
-
-Retrain anytime:
-
-```bash
-uv run python scripts/train_pipeline.py
+```
+StandardScaler → LinearRegression
 ```
 
-## CI/CD Pipeline
+- Split: 80 / 20 train / test (`random_state=42`)
+- Metrics logged to MLflow (`sqlite:///mlflow.db`, experiment `WealthWise_Forecast`) on every run
+- Quality gate: raises `ValueError` if R² < `R2_THRESHOLD`
+- Artifact saved to `models/spending_model.pkl` and optionally uploaded to S3
 
-Two-job GitHub Actions workflow on push to `main`:
+### Retrain
 
-1. **test** — installs deps via `uv sync --frozen`, runs pytest with `--cov-fail-under=80`. Deploy is blocked if any test fails or coverage drops below 80%.
-2. **deploy** — SSH to EC2, `git pull`, `docker-compose up --build`. Only runs if the test job passes (`needs: test`).
+```bash
+uv run python scripts/generate_data.py   # regenerate transactions.csv
+uv run python scripts/train_pipeline.py  # retrain and log to MLflow
+```
+
+## CI/CD
+
+Two-job GitHub Actions workflow triggered on push to `main`:
+
+```
+push to main
+    │
+    ▼
+test job
+  - actions/checkout@v3
+  - astral-sh/setup-uv@v4
+  - actions/setup-python@v4 (3.11)
+  - uv sync --frozen
+  - uv run pytest --cov=src --cov-fail-under=80
+    │
+    │ must pass
+    ▼
+deploy job  (needs: test)
+  - appleboy/ssh-action → EC2
+    - clone repo on first deploy, git pull on subsequent
+    - chmod +x deploy.sh && ./deploy.sh
+      (down → image prune → disk check → compose up --build -d)
+  - on failure → email alert via dawidd6/action-send-mail
+```
+
+Deploy is blocked if any test fails or coverage drops below 80%.
 
 ## Docker
 
@@ -199,13 +237,25 @@ Two-job GitHub Actions workflow on push to `main`:
 docker-compose up --build
 ```
 
-Uses uv inside the container (copies uv binary from `ghcr.io/astral-sh/uv`). Exposes port 8501.
+The image copies the uv binary from `ghcr.io/astral-sh/uv:latest`, runs `uv sync --frozen --no-dev` to install production dependencies, then starts Streamlit on port 8501.
+
+```dockerfile
+FROM python:3.11-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+COPY . .
+EXPOSE 8501
+CMD ["uv", "run", "streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+```
 
 ## Known Limitations
 
-- Trained on synthetic data — predictions will improve significantly with real bank transaction data
-- Groq Llama 3.3 has intermittent tool-call failures (~30% rate); retry logic (3 attempts) handles most cases. Gemini or Claude recommended for production use.
-- Free-tier API quotas apply; the model selector sidebar lets users switch providers without restarting the app.
+- **Synthetic training data** — the ML model is trained on generated transactions. Forecast accuracy will improve substantially with real bank export data.
+- **Groq tool-call reliability** — `llama-3.3-70b-versatile` has an intermittent HTTP 400 `tool_use_failed` error (~30% rate on complex queries). The retry loop handles most occurrences; Gemini or Claude are more reliable for production use.
+- **Free-tier API quotas** — the sidebar model selector lets users switch providers live without restarting the app if a quota is hit.
+- **Single-user SQLite checkpoints** — `data/checkpoints.db` is a local file; concurrent multi-user deployments would require a shared checkpoint backend.
 
 ## License
 
