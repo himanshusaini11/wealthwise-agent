@@ -7,6 +7,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
+RUN mkdir -p /app/models /app/data
+
 COPY . .
 
 EXPOSE 8501
